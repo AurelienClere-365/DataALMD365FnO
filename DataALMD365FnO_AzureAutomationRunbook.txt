@@ -1,0 +1,145 @@
+param
+(
+    [Parameter(Mandatory=$false)]
+    [object] $WebhookData
+)
+
+write-output "start"
+$WebhookName = $WebhookData.WebhookName  
+$WebhookHeaders = $WebhookData.RequestHeader  
+$WebhookBody = $WebhookData.RequestBody  
+$Input = (ConvertFrom-Json -InputObject $WebhookBody) 
+
+$rgname = $Input.rgname
+Write-Output "Azure RG Name : " $rgname
+$vmname = $Input.vmname
+Write-Output "Azure VM Name : " $vmname
+$UserName = $Input.UserName
+Write-Output "UserName : " $UserName
+$Password = $Input.Password
+Write-Output "Password : " $Password
+$ClientId = $Input.ClientId
+Write-Output "Client Id : " $ClientId
+$ProjectId = $Input.ProjectId
+Write-Output "LCS Project Id : " $ProjectId
+$LcsApiUri = $Input.LcsApiUri
+Write-Output "LCS API URI : " $LcsApiUri
+$ServerInstance = $Input.ServerInstance
+Write-Output "Server Instance : " $ServerInstance
+
+Write-Output "Connecting to azure via Connect-AzAccount -Identity"
+Connect-AzAccount -Identity 
+Write-Output "Successfully connected with Automation account's Managed Identity"
+
+#The Magic Script ;)
+$scriptToRun =
+'
+function Invoke-DataALMD365FnO {    
+    
+    try
+    {
+
+        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        Write-Output "Username launching the Powershell : " $identity
+		Write-Output "Launching on VM : " '
+		$scriptToRun += $vmname
+		$scriptToRun += '
+        $stopwatch =  [system.diagnostics.stopwatch]::StartNew()
+        
+        #Connect to LCS and set it. No MFA Account (dedicated service account - should have access to LCS - AppReg needed for LCS - could be stored to an Azure Key Vault)
+        Write-Output "Connect to LCS..."
+        Get-D365LcsApiToken -Username ' 
+		$scriptToRun += $UserName 
+		$scriptToRun += ' -Password ' 
+		$scriptToRun += $Password
+		$scriptToRun += ' -ClientId ' 
+		$scriptToRun += $ClientId
+		$scriptToRun += ' -LcsApiUri ' 
+		$scriptToRun += $LcsApiUri
+		$scriptToRun += ' | Set-D365LcsApiConfig'
+		$scriptToRun += 
+		' 
+		#Adding other params
+        Set-D365LcsApiConfig -ClientId '
+		$scriptToRun += $ClientId
+		$scriptToRun += ' -ProjectId ' 
+		$scriptToRun += $ProjectId
+        $scriptToRun += ' 
+		Write-Output "LCS Connection is OK."
+        
+        #We retrieve only the latest backup made - could be also possible to pass it through as external parameter or via a filter
+        Write-Output "Retrieve the last backup on LCS"
+        $Backup = Get-D365LcsDatabaseBackups -Latest
+        #We will store in a TEMP folder that you have in DevBox already
+        $BackupPath = "C:\Temp\"
+        $BackupPath += $Backup.FileName
+        #Invoke AzCopy to automatically download it
+        Invoke-D365AzCopyTransfer -SourceUri $Backup.FileLocation -DestinationUri $BackupPath -Force
+        Write-Output "Backup downloaded to " + $BackupPath
+
+        #Part of the Restore SQL
+        #1st we shutdown all AX Services (AOS etc...)
+        Write-Output "Stop all AX Services"
+        Stop-D365Environment -All
+        Write-Output "Waiting 60 seconds, just to make sure that all services are really stopped..."
+        Start-Sleep -Seconds 60 #Just to make sure...
+        #2nd we erase the previous AxDB - I would suggest anyhow to always activate automatic backup in DevBox if needed ;)
+        #Replace by the name of your machine for ServerInstance
+        Write-Output "Deleting the previous AxDB..."
+        Invoke-SqlCmd -ServerInstance ' 
+		$scriptToRun += $ServerInstance 
+		$scriptToRun += ' -Query "BEGIN ALTER DATABASE [AxDB] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [AxDB]; END;" -Verbose
+
+        #3rd we restore the backup on it 
+        Write-Output "Launching the SQL Restore"
+        $fileExe = "C:\SqlPackage\sqlpackage.exe"
+        & $fileExe /a:import /sf:$BackupPath /tsn:localhost /tdn:AxDB /p:CommandTimeout=1200
+
+        #4th SYNC DB + reactivate all AX Services (AOS etc...)
+        Write-Output "Launching SYNC DB"
+        Invoke-D365DBSync
+        Write-Output "Starting all AX Services"
+        Start-D365Environment -All   
+        Write-Output "Waiting 60 seconds, just to make sure that all services are really started..."
+        Start-Sleep -Seconds 60
+        
+        #After import we could erase it (the .bacpac) - if you like you can move it elsewhere to archive it.
+        Write-Output "Erase the backup downloaded"
+        Remove-Item -Path $BackupPath -Force
+
+        $stopwatch.Stop()
+        $elapsed = $stopwatch.ElapsedMilliseconds
+        $stopwatch.Reset()
+		
+		Write-Output $elapsed "Milliseconds in total for the whole operation"
+        Write-Output "All OK - Finished"
+        
+    }
+    catch
+    {
+        Write-Error $Error
+      
+    }
+
+}
+
+Invoke-DataALMD365FnO > C:\Log_DataALMD365FnO.txt
+
+'
+
+Write-Output $scriptToRun
+
+#Script which should run inside the Azure VM
+$scriptPath = 'DataALM_D365FnO.ps1'
+
+#Check before if the VM is well running
+Start-AzVM -ResourceGroupName $rgname -Name $vmname
+#We wait a little bit...
+Start-Sleep -Seconds 300
+
+# Run the script against all the VM
+Write-Output "Run Script Against the VM"
+
+Out-File -InputObject $scriptToRun -FilePath $scriptPath
+
+Invoke-AzVMRunCommand -ResourceGroupName $rgname -Name $vmname -CommandId 'RunPowerShellScript' -ScriptPath $scriptPath

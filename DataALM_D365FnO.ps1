@@ -12,7 +12,7 @@
         $ClientId = ""
         $ProjectId = ""
         $LcsApiUri = "https://lcsapi.lcs.dynamics.com"
-        $ServerInstane = ""
+        $ServerInstance = ""
 
         $stopwatch =  [system.diagnostics.stopwatch]::StartNew()
         

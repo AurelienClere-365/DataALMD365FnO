@@ -46,7 +46,7 @@
         #3rd we restore the backup on it 
         Write-Output "Launching the SQL Restore"
         $fileExe = "C:\SqlPackage\sqlpackage.exe"
-        & $fileExe /a:import /sf:$BackupPath /tsn:localhost /tdn:AxDB /p:CommandTimeout=1200
+        & $fileExe /a:import /sf:$BackupPath /tsn:localhost /tdn:AxDB /p:CommandTimeout=1200 /TargetEncryptConnection:False
 
         #4th SYNC DB + reactivate all AX Services (AOS etc...)
         Write-Output "Launching SYNC DB"

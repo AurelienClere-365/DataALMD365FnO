@@ -1,11 +1,5 @@
     #CHECK First dependency library needed - Thanks to the community ;) https://github.com/d365collaborative/d365fo.tools
-    If (-not(Get-InstalledModule d365fo.tools -ErrorAction silentlycontinue)) {
-        Write-Host "Module does not exist - Installing D365FO.Tools"
-        Install-Module -Name d365fo.tools -RequiredVersion 0.6.69
-      }
-      Else {
-        Write-Host "Module D365FO.Tools already exists"
-      }
+    Install-Module -Name d365fo.tools -Force
   
       #AZCopy part
       $InstallPath = 'C:\temp\d365fo.tools\AzCopy'
